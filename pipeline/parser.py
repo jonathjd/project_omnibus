@@ -3,17 +3,44 @@ import os
 import re
 from datetime import date
 from pathlib import Path
-from typing import Dict, List
-from dotenv import load_dotenv
+from typing import Dict, List, Optional
+from dataclasses import dataclass, field
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
 import tqdm
+from uuid import uuid4
 
 from constants import DRB
 
-load_dotenv()
+
+# 3 data classes, Chapter, Verse, Writing
+@dataclass
+class WritingNode:
+    uuid: str = field(default_factory=str(uuid4()))
+    author: str
+    title: str
+    testament: Optional[str] = field(default_factory=list)
+    labels: List[str] = ["SCRIPTURE", "WRITING"]
+
+
+@dataclass
+class ChapterNode:
+    uuid: str = field(default_factory=str(uuid4()))
+    writing_title: str
+    chapter: int
+    writing_uuid: str
+
+
+@dataclass
+class VerseNode:
+    uuid: str
+    chapter: int
+    verse: int
+    drb: str
+    embedding: List[float] = None
+    chapter_uuid: str
 
 
 class _Base:
@@ -33,23 +60,14 @@ class _Base:
     """
 
     def __init__(self, raw_text: Path):
-        self._raw_text = raw_text
+        self._raw_text_path = raw_text
         self._title = self._extract_title()
-        self._interim_text = (
-            f"./data/interim/{date.today().strftime('%Y-%m-%d')}-{self._title}.txt"
-        )
-        self._cleaned_writing_file = (
-            f"./data/cleaned/{date.today().strftime('%Y-%m-%d')}-{self._title}-writing-nodes.json"
-        )
-        self._cleaned_chapter_file = (
-            f"./data/cleaned/{date.today().strftime('%Y-%m-%d')}-{self._title}-chapter-nodes.json"
-        )
-        self._cleaned_verse_file = (
-            f"./data/cleaned/{date.today().strftime('%Y-%m-%d')}-{self._title}-verse-nodes.json"
+        self._cleaned_text_path = (
+            Path("data") / "cleaned" / date.today().strftime("%Y-%m-%d") / f"{self._title}.txt"
         )
 
     def _extract_title(self) -> str:
-        return os.path.basename(self._raw_text).split(".", 1)[0]
+        return os.path.basename(self._raw_text_path).split(".", 1)[0]
 
 
 class LatinVulgate(_Base):
@@ -60,33 +78,23 @@ class LatinVulgate(_Base):
         self._chapter_nodes = []
         self._verse_nodes = []
         self.WORKS = DRB["WORKS"]
-        self.NEW_TESTAMENT = DRB["NEW_TESTAMENT"]
         self.WRITING_NODE_IDS = DRB["WRITING_NODE_IDS"]
-        self._threshold = 0.65
-        self.k = 10
+        # self._cosine_threshold = 0.65
+        # self.k = 10
         self.model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
 
-    def _reformat_text(self) -> List[str]:
+    def _reformat_text(self) -> None:
         """
-        Reformat raw text into a list of verse lines.
-
-        This method reads raw text from a file, processes it to extract verses
-        based on a specific pattern, and writes the formatted verses to an
-        interim file. Each verse is identified by a pattern matching a verse
-        number (e.g., "1:1.") and subsequent lines are concatenated until an
-        empty line is encountered.
-
-            List[str]: A list of formatted verse lines.
+        Reformat raw text into a list of verse lines without loading all lines into memory.
         """
         verse_pattern = r"^\d+:\d+\."
-
         verses = []
-        with open(self._raw_text, "r", encoding="utf-8") as file:
-            lines = file.readlines()
+
+        with open(self._raw_text_path, "r", encoding="utf-8") as file:
             capture = False
             verse_text = ""
 
-            for line in tqdm.tqdm(lines, desc="Processing raw text"):
+            for line in tqdm.tqdm(file, desc="Processing raw text"):
                 if re.match(verse_pattern, line):
                     if verse_text:
                         verses.append(verse_text.strip())
@@ -101,32 +109,40 @@ class LatinVulgate(_Base):
             if verse_text:
                 verses.append(verse_text.strip())
 
-        with open(self._interim_text, "w", encoding="utf-8") as interim_file:
+        with open(self._cleaned_text_path, "w", encoding="utf-8") as cleaned_file:
             for verse in verses:
-                interim_file.write(verse + "\n")
+                cleaned_file.write(verse + "\n")
 
-        return verses
+        return
 
-    def _parse_writings(self) -> List[Dict]:
+    def _parse_writings(self) -> List[WritingNode]:
         """
         Generate Writing (Book) nodes.
 
         Iterates over the WORKS dictionary to create a list of writing nodes,
         each containing the writing ID, author, title, and testament.
 
+        WORKS dictionary struture:
+            {
+                "Genesis": "Moses",
+                "Exodus": "Moses",
+                "Leviticus": "Moses",
+                ...
+            }
+
         Returns:
             List[Dict]: A list of dictionaries representing writing nodes.
         """
         writing_nodes = []
         for book, author in self.WORKS.items():
-            writing_nodes.append(
-                {
-                    "writing_id": self.WRITING_NODE_IDS[book],
-                    "author": author,
-                    "title": book,
-                    "testament": "new" if book in self.NEW_TESTAMENT else "old",
-                }
+
+            testament = (
+                "new"
+                if author in ["Matthew", "Mark", "Luke", "John", "Paul", "Peter", "Jude", "James"]
+                else "old"
             )
+
+            writing_nodes.append(WritingNode(author=author, title=book, testament=testament))
         return writing_nodes
 
     def _parse_chapters_and_verses(self, verses: List[str]) -> tuple[List[Dict], List[Dict]]:
@@ -244,7 +260,7 @@ class LatinVulgate(_Base):
         similar_pairs = []
         for i in range(len(embeddings)):
             for j in range(1, self.k):
-                if similarities[i, j] > self._threshold:
+                if similarities[i, j] > self._cosine_threshold:
                     similar_pairs.append(
                         (
                             self._verse_nodes[i]["verse_id"],
@@ -310,11 +326,11 @@ class Neo4jLoader:
         chapter_nodes: List[Dict],
         writing_nodes: List[Dict],
     ):
-        self.__neo4j_uri = os.getenv("NEO4J_URI")
-        self.__neo4j_username = os.getenv("NEO4J_USERNAME")
-        self.__neo4j_password = os.getenv("NEO4J_PASSWORD")
-        self.__aura_instanceid = os.getenv("AURA_INSTANCEID")
-        self.__aura_instancename = os.getenv("AURA_INSTANCENAME")
+        self.__neo4j_uri = os.environ.get("NEO4J_URI")
+        self.__neo4j_username = os.environ.get("NEO4J_USERNAME")
+        self.__neo4j_password = os.environ.get("NEO4J_PASSWORD")
+        self.__aura_instanceid = os.environ.get("AURA_INSTANCEID")
+        self.__aura_instancename = os.environ.get("AURA_INSTANCENAME")
 
 
 if __name__ == "__main__":

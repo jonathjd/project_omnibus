@@ -7,7 +7,7 @@ setup:
 
 # Format code with black
 format:
-	black parser.py loader.py --line-length 99
+	black parser.py --line-length 99
 
 lint: 
 	flake8 .

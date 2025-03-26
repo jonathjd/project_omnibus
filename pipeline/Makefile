@@ -5,12 +5,8 @@ setup:
 	pip install --upgrade pip && \
 	pip install -r requirements.txt
 
-# Format code with black
 format:
 	black parser.py --line-length 99
-
-lint: 
-	flake8 .
 
 sort: 
 	isort .

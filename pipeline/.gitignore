@@ -5,6 +5,8 @@ __pycache__/
 
 # data/large files
 data/
+plots/
+.logs/
 
 # C extensions
 *.so

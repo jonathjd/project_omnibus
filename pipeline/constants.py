@@ -145,4 +145,18 @@ DRB = {
         "Jude": "jud",
         "Revelation": "rev",
     },
+    "NAME_ALIASES": {
+        "abram": "abraham",
+    },
+    "EXCLUSIONS": {
+        "god",
+        "jesus",
+        "holy ghost",
+        "christ jesus",
+        "jesus christ",
+        "lamb",
+        "Jesus Christ our Lord",
+        "Christ Jesus our Lord",
+        "christ",
+    },
 }

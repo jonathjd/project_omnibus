@@ -437,9 +437,41 @@ class Neo4jLoader:
             logger.error("Cannot connect to Neo4j database", exc_info=True)
             raise ConnectionError("Failed to connect to Neo4j database") from e
 
-    def upload_nodes(self, nodes, node_type):
-        # Batch and upload
-        pass
+    def upload_nodes(self, nodes: List[dataclass], dry_run: bool = False) -> None:
+        assert all(
+            isinstance(node, (ChapterNode, WritingNode, VerseNode, EntityNode)) for node in nodes
+        )
+
+        with self.driver.session() as session:
+            tx = session.begin_transaction()
+            try:
+                for node in nodes:
+                    query = """
+                        MERGE (n:$all($labels) {uuid: $uuid})
+                        SET n += $props
+                    """
+                    props = {
+                        k: v
+                        for k, v in dataclass.asdict(node)
+                        if k not in ["uuid", "labels", "label"]
+                    }
+                    tx.run(
+                        query,
+                        labels=node.labels if not isinstance(node, EntityNode) else node.label,
+                        uuid=node.uuid,
+                        props=props,
+                    )
+
+                if dry_run:
+                    tx.rollback()
+
+                else:
+                    tx.commit()
+
+            except Exception as e:
+                tx.rollback()
+                logger.error("Could not upload node %s with query %s", node, query, exc_info=True)
+                raise type(e)(f"Failed to upload node: {e}") from e
 
     def upload_relationships(self, rels, rel_type):
         # Link nodes

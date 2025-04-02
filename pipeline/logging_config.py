@@ -4,10 +4,8 @@ import os
 
 
 def setup_logging():
-    # Ensure .logs directory exists
     os.makedirs(".logs", exist_ok=True)
 
-    # Create log filename with timestamp down to seconds
     log_filename = f".logs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-transfer.log"
 
     # create logger

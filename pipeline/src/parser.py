@@ -1,16 +1,16 @@
-import os
 import re
-from dataclasses import dataclass, field
+from src.models import WritingNode, ChapterNode, VerseNode, EntityNode, VerseSimilarity
+from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
-from typing import List, Optional
-from uuid import uuid4
+from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import spacy
-from neo4j import AuthError, GraphDatabase, ServiceUnavailable
+from neo4j import GraphDatabase
+from neo4j.exceptions import AuthError, ServiceUnavailable
 from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
 
@@ -18,51 +18,6 @@ from constants import DRB
 from logging_config import setup_logging
 
 logger = setup_logging()
-
-
-# ---------------------
-# Data Classes
-# ---------------------
-@dataclass
-class WritingNode:
-    author: str
-    title: str
-    testament: Optional[str]
-    uuid: str = field(default_factory=uuid4)
-    labels: List[str] = field(default_factory=lambda: ["SCRIPTURE", "WRITING"])
-
-
-@dataclass
-class ChapterNode:
-    writing_title: str
-    chapter: int
-    uuid: str = field(default_factory=uuid4)
-    labels: List[str] = field(default_factory=lambda: ["CHAPTER"])
-
-
-@dataclass
-class VerseNode:
-    writing_title: str
-    chapter: int
-    verse: int
-    drb: str
-    uuid: str = field(default_factory=uuid4)
-    embedding: List[float] = field(default_factory=list)
-    labels: List[str] = field(default_factory=lambda: ["VERSE"])
-
-
-@dataclass(unsafe_hash=True)
-class EntityNode:
-    name: str
-    label: str
-    uuid: str = field(default_factory=uuid4)
-
-
-@dataclass
-class VerseSimilarity:
-    verse_id_1: str
-    verse_id_2: str
-    similarity: float
 
 
 # ---------------------
@@ -75,6 +30,8 @@ class LatinVulgate:
      - Parsing into Writing, Chapter, Verse nodes
     """
 
+    WORKS = DRB["WORKS"]
+
     def __init__(self, raw_text: Path):
         # save raw text path and clean
         self._raw_text_path = raw_text
@@ -82,9 +39,6 @@ class LatinVulgate:
         self._cleaned_text_path = (
             Path("data") / "cleaned" / f"{date.today().strftime('%Y-%m-%d')}-{self._title}.txt"
         )
-
-        # Works constants
-        self.WORKS = DRB["WORKS"]
 
         # verse line regex
         self._verse_pattern = r"(\d+):(\d+)\.\s+(.+)"
@@ -215,27 +169,29 @@ class NLP:
      - Embeddings / nearest-neighbor searches
     """
 
+    EXCLUSIONS = DRB["EXCLUSIONS"]
+    NAME_ALIASES = DRB["NAME_ALIASES"]
+    PATTERNS = [
+        {"label": "PERSON", "pattern": "Esau"},
+        {"label": "PERSON", "pattern": "Ramesses"},
+        {"label": "PERSON", "pattern": "Pharao"},
+    ]
+
+    INCLUDED_ENTS = ["PERSON", "NORP", "LOC", "GPE"]
+
     def __init__(self):
         """
         Initialize NLP with a spaCy model, custom patterns, and a sentence transformer.
         """
-        self.nlp = spacy.load("en_core_web_trf")
-
-        # constants
-        self.EXCLUSIONS = DRB["EXCLUSIONS"]
-        self.NAME_ALIASES = DRB["NAME_ALIASES"]
-
-        # Custom patterns
-        ruler = self.nlp.add_pipe("entity_ruler", after="ner")
-        patterns = [
-            {"label": "PERSON", "pattern": "Esau"},
-            {"label": "PERSON", "pattern": "Ramesses"},
-            {"label": "PERSON", "pattern": "Pharao"},
-        ]
-        ruler.add_patterns(patterns)
+        # NLP model for entity recognition
+        self._nlp = spacy.load("en_core_web_trf")
 
         # Model for embeddings
-        self.model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+        self._model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+
+        # Custom patterns
+        ruler = self._nlp.add_pipe("entity_ruler", after="ner")
+        ruler.add_patterns(self.PATTERNS)
 
     def extract_entities(
         self,
@@ -264,7 +220,7 @@ class NLP:
             ...     VerseNode(drb="And Adam called his wife's name Eve."),
             ...     VerseNode(drb="Cain spoke to Abel his brother.")
             ... ]
-            >>> entities = parser.extract_entities(verses, chunk_size=2)
+            >>> entities = parser.extract_entities(verses, chunk_size=750)
             >>> [entity.name for entity in entities]
             ['Adam', 'Eve', 'Cain', 'Abel']
 
@@ -282,10 +238,10 @@ class NLP:
             logger.info(f"Processing verses {i} through {i + chunk_size}...")
             text = " ".join(verses[i : i + chunk_size])
             try:
-                doc = self.nlp(text)
+                doc = self._nlp(text)
                 for ent in doc.ents:
                     # Add only wanted entities
-                    if ent.label_ in ["PERSON", "NORP", "LOC", "GPE"]:
+                    if ent.label_ in self.INCLUDED_ENTS:
                         text_lower = ent.text.lower()
                         if text_lower not in self.EXCLUSIONS:
                             normalized = self.NAME_ALIASES.get(text_lower, ent.text)
@@ -323,7 +279,7 @@ class NLP:
             384
         """
         verse_texts = [v.drb for v in verse_nodes]
-        embeddings = self.model.encode(verse_texts, batch_size=256, show_progress_bar=True)
+        embeddings = self._model.encode(verse_texts, batch_size=256, show_progress_bar=True)
         for node, emb in zip(verse_nodes, embeddings):
             node.embedding = emb.tolist()
 
@@ -366,15 +322,18 @@ class NLP:
         distances, indices = nbrs.kneighbors(embeddings)
         similarities = 1 - distances
 
-        similar_pairs = [
-            VerseSimilarity(
-                verse_id_1=verse_nodes[i].uuid,
-                verse_id_2=verse_nodes[indices[i, j]].uuid,
-                similarity=float(similarities[i, j]),
-            )
-            for i in range(len(embeddings))
-            for j in range(1, n_neighbors)
-        ]
+        similar_pairs = []
+        for i in range(len(embeddings)):
+            for j in range(1, n_neighbors):  # start from 1 to skip self-similarity
+                verse_1 = verse_nodes[i]
+                verse_2 = verse_nodes[indices[i, j]]
+                sim_score = float(similarities[i, j])
+
+                similar_pairs.append(
+                    VerseSimilarity(
+                        verse_id_1=verse_1.uuid, verse_id_2=verse_2.uuid, similarity=sim_score
+                    )
+                )
 
         return similar_pairs
 
@@ -414,9 +373,12 @@ class NLP:
 
         return
 
+    @property
+    def model(self):
+        return self._model
+
 
 class Neo4jLoader:
-    # initialize connection
     def __init__(
         self,
         URI: str,
@@ -428,55 +390,149 @@ class Neo4jLoader:
         self.__neo4j_password = PASSWORD
 
         try:
-            self.driver = GraphDatabase.driver(
+            # initialize connection
+            self._driver = GraphDatabase.driver(
                 self.__neo4j_uri, auth=(self.__neo4j_username, self.__neo4j_password)
             )
-            self.driver.verify_connectivity()
+            self._driver.verify_connectivity()
 
         except (ServiceUnavailable, AuthError) as e:
             logger.error("Cannot connect to Neo4j database", exc_info=True)
             raise ConnectionError("Failed to connect to Neo4j database") from e
 
-    def upload_nodes(self, nodes: List[dataclass], dry_run: bool = False) -> None:
+    def upload_nodes(self, nodes: List[dataclass], dry_run: bool = True) -> None:
+        """
+        Uploads nodes to Neo4j using MERGE and optional dry run.
+
+        Args:
+            nodes (List[dataclass]): A list of WritingNode, ChapterNode, VerseNode, or EntityNode objects.
+            dry_run (bool): If True, rolls back the transaction without committing changes.
+
+        Example:
+            >>> loader = Neo4jLoader("bolt://localhost:7687", "neo4j", "password")
+            >>> nodes = [WritingNode(author="John", title="Sample Book")]
+            >>> loader.upload_nodes(nodes, dry_run=True)
+        """
         assert all(
             isinstance(node, (ChapterNode, WritingNode, VerseNode, EntityNode)) for node in nodes
-        )
+        ), f"Invalid node types in node list! {[node for node in nodes if not isinstance(node, (ChapterNode, WritingNode, VerseNode, EntityNode))]}"
 
-        with self.driver.session() as session:
+        logger.info(f"Attempting to upload {len(nodes)} nodes into neo4j DB...")
+
+        with self._driver.session() as session:
             tx = session.begin_transaction()
             try:
                 for node in nodes:
-                    query = """
-                        MERGE (n:$all($labels) {uuid: $uuid})
+                    sanitized_labels = []
+                    for label in node.labels if not isinstance(node, EntityNode) else [node.label]:
+                        label_escaped = label.replace("`", "``")
+                        sanitized_labels.append(f"`{label_escaped}`")
+
+                    final_labels = ":".join(sanitized_labels)
+
+                    query = f"""
+                        MERGE (n:{final_labels} {{uuid: $uuid}})
                         SET n += $props
                     """
                     props = {
                         k: v
-                        for k, v in dataclass.asdict(node)
+                        for k, v in asdict(node).items()
                         if k not in ["uuid", "labels", "label"]
                     }
-                    tx.run(
-                        query,
-                        labels=node.labels if not isinstance(node, EntityNode) else node.label,
-                        uuid=node.uuid,
-                        props=props,
-                    )
+
+                    tx.run(query, uuid=str(node.uuid), props=props)
 
                 if dry_run:
                     tx.rollback()
-
                 else:
                     tx.commit()
-
             except Exception as e:
                 tx.rollback()
-                logger.error("Could not upload node %s with query %s", node, query, exc_info=True)
-                raise type(e)(f"Failed to upload node: {e}") from e
+                logger.error(f"Failed to upload node: {e}", exc_info=True)
+                raise
 
-    def upload_relationships(self, rels, rel_type):
-        # Link nodes
-        pass
+    def upload_relationships(self, rel_nodes: List[VerseSimilarity], dry_run: bool = True) -> None:
+        """
+        Uploads SIMILAR_TO relationships between verse nodes.
+
+        Args:
+            rel_nodes (List[VerseSimilarity]): Relationship data to be uploaded.
+            dry_run (bool): If True, rolls back the transaction without committing changes.
+
+        Example:
+            >>> loader = Neo4jLoader("bolt://localhost:7687", "neo4j", "password")
+            >>> rel_nodes = [VerseSimilarity(verse_id_1={uuid}, verse_id_2=uuid, similiarity=0.7117224)]
+            >>> loader.upload_relationships(nodes, dry_run=True)
+
+        Raises:
+            Exception: If relationship creation fails.
+
+        Note:
+            Both verse nodes must already exist in the database for this to succeed.
+        """
+
+        assert all(
+            isinstance(node, VerseSimilarity) for node in rel_nodes
+        ), f"Invalid node types in node list! {[node for node in rel_nodes if not isinstance(node, VerseSimilarity)]}"
+        logger.info(f"Attempting to upload {len(rel_nodes)} relationships into neo4j DB...")
+
+        params = [asdict(node) for node in rel_nodes]
+
+        query = """
+        UNWIND $relNodes AS rel
+        MATCH (v1 {uuid: rel.verse_id_1}), (v2 {uuid: rel.verse_id_2})
+        MERGE (v1)-[r:SIMILAR_TO]->(v2)
+        SET r.similarity = rel.similarity
+        """
+
+        with self._driver.session() as session:
+            tx = session.begin_transaction()
+            try:
+                tx.run(query, relNodes=params)
+                if dry_run:
+                    tx.rollback()
+                else:
+                    tx.commit()
+            except Exception as e:
+                tx.rollback()
+                logger.error(f"Failed to upload node: {e}", exc_info=True)
+                raise
 
     def close(self):
         # Cleanup
+        self._driver.close()
         pass
+
+    @property
+    def neo4j_uri(self):
+        return self.__neo4j_uri
+
+    @property
+    def neo4j_username(self):
+        return self.__neo4j_username
+
+    @property
+    def neo4j_password(self):
+        return self.__neo4j_password
+
+    @neo4j_uri.setter
+    def neo4j_uri(self, value):
+        assert isinstance(value, str) and any(
+            value.startswith(prefix)
+            for prefix in ["bolt://", "neo4j://", "neo4j+s://", "neo4j+ssc://"]
+        ), "neo4j_uri must be a string starting with one of ['bolt://','neo4j://','neo4j+s://','neo4j+ssc://']"
+        self.__neo4j_uri = value
+
+    @neo4j_username.setter
+    def neo4j_username(self, value):
+        assert (
+            isinstance(value, str) and len(value) > 0
+        ), "neo4j_username must be a non-empty string"
+        self.__neo4j_username = value
+
+    @neo4j_password.setter
+    def neo4j_password(self, value):
+        assert (
+            isinstance(value, str) and len(value) > 0
+        ), "neo4j_username must be a non-empty string"
+        self.__neo4j_password = value

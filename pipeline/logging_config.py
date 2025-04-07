@@ -6,7 +6,7 @@ import os
 def setup_logging():
     os.makedirs(".logs", exist_ok=True)
 
-    log_filename = f".logs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-transfer.log"
+    log_filename = f".logs/{datetime.now().strftime('%Y-%m-%d_%H-%M')}-transfer.log"
 
     # create logger
     logger = logging.getLogger("transfer_pipeline")

@@ -1,8 +1,9 @@
 import argparse
 import os
-from src.parser import NLP, LatinVulgate, Neo4jLoader, logger
 from pathlib import Path
 from time import perf_counter
+
+from src.parser import NLP, LatinVulgate, Neo4jLoader, logger
 
 
 def main(dry_run: bool, sandbox: bool):

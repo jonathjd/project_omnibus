@@ -1,5 +1,6 @@
 import re
-from dataclasses import asdict, dataclass
+from src.models import WritingNode, ChapterNode, VerseNode, EntityNode, VerseSimilarity
+from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
 from typing import List
@@ -15,8 +16,6 @@ from sklearn.neighbors import NearestNeighbors
 
 from constants import DRB
 from logging_config import setup_logging
-from src.models import (ChapterNode, EntityNode, VerseNode, VerseSimilarity,
-                        WritingNode)
 
 logger = setup_logging()
 
@@ -477,11 +476,18 @@ class Neo4jLoader:
         ), f"Invalid node types in node list! {[node for node in rel_nodes if not isinstance(node, VerseSimilarity)]}"
         logger.info(f"Attempting to upload {len(rel_nodes)} relationships into neo4j DB...")
 
-        params = [asdict(node) for node in rel_nodes]
+        params = [
+            {
+                "verse_id1": str(node.verse_id_1),
+                "verse_id2": str(node.verse_id_2),
+                "similarity": node.similarity,
+            }
+            for node in rel_nodes
+        ]
 
         query = """
         UNWIND $relNodes AS rel
-        MATCH (v1 {uuid: rel.verse_id_1}), (v2 {uuid: rel.verse_id_2})
+        MATCH (v1 {uuid: rel.verse_id1}), (v2 {uuid: rel.verse_id2})
         MERGE (v1)-[r:SIMILAR_TO]->(v2)
         SET r.similarity = rel.similarity
         """

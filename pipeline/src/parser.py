@@ -1,6 +1,5 @@
 import re
-from src.models import WritingNode, ChapterNode, VerseNode, EntityNode, VerseSimilarity
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 from typing import List
@@ -16,6 +15,8 @@ from sklearn.neighbors import NearestNeighbors
 
 from constants import DRB
 from logging_config import setup_logging
+from src.models import (ChapterNode, EntityNode, VerseNode, VerseSimilarity,
+                        WritingNode)
 
 logger = setup_logging()
 

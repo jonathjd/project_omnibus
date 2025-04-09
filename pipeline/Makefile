@@ -6,13 +6,10 @@ setup:
 	pip install -r requirements.txt
 
 format:
-	black parser.py --line-length 99
+	black . --line-length 99
 
 sort: 
 	isort .
-
-test: 
-	pytest
 
 clean: 
 	rm -rf .venv

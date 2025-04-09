@@ -3,6 +3,10 @@ import os
 from pathlib import Path
 from time import perf_counter
 
+import dotenv
+
+dotenv.load_dotenv()
+
 from src.parser import NLP, LatinVulgate, Neo4jLoader, logger
 
 

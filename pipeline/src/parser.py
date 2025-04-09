@@ -451,7 +451,9 @@ class Neo4jLoader:
                 logger.error(f"Failed to upload node: {e}", exc_info=True)
                 raise
 
-    def upload_relationships(self, rel_nodes: List[VerseSimilarity], dry_run: bool = True) -> None:
+    def upload_relationships(
+        self, rel_nodes: List[VerseSimilarity], chunk_size: int = 5000, dry_run: bool = True
+    ) -> None:
         """
         Uploads SIMILAR_TO relationships between verse nodes.
 
@@ -476,34 +478,38 @@ class Neo4jLoader:
         ), f"Invalid node types in node list! {[node for node in rel_nodes if not isinstance(node, VerseSimilarity)]}"
         logger.info(f"Attempting to upload {len(rel_nodes)} relationships into neo4j DB...")
 
-        params = [
-            {
-                "verse_id1": str(node.verse_id_1),
-                "verse_id2": str(node.verse_id_2),
-                "similarity": node.similarity,
-            }
-            for node in rel_nodes
-        ]
-
         query = """
         UNWIND $relNodes AS rel
         MATCH (v1 {uuid: rel.verse_id1}), (v2 {uuid: rel.verse_id2})
         MERGE (v1)-[r:SIMILAR_TO]->(v2)
-        SET r.similarity = rel.similarity
+        SET r.cos_sim = rel.similarity
         """
 
-        with self._driver.session() as session:
-            tx = session.begin_transaction()
-            try:
-                tx.run(query, relNodes=params)
-                if dry_run:
+        for i in range(0, len(rel_nodes), chunk_size):
+            logger.info(f"Uploading relationship nodes {i} through {i + chunk_size}...")
+
+            params = [
+                {
+                    "verse_id1": str(node.verse_id_1),
+                    "verse_id2": str(node.verse_id_2),
+                    "similarity": node.similarity,
+                }
+                for node in rel_nodes[i : i + chunk_size]
+            ]
+
+            with self._driver.session() as session:
+                try:
+                    tx = session.begin_transaction()
+                    tx.run(query, relNodes=params)
+
+                    if dry_run:
+                        tx.rollback()
+                    else:
+                        tx.commit()
+                except Exception as e:
                     tx.rollback()
-                else:
-                    tx.commit()
-            except Exception as e:
-                tx.rollback()
-                logger.error(f"Failed to upload node: {e}", exc_info=True)
-                raise
+                    logger.error(f"Failed to upload node: {e}", exc_info=True)
+                    raise
 
     def close(self):
         # Cleanup

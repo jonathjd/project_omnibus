@@ -57,7 +57,7 @@ def main(dry_run: bool, sandbox: bool):
     neo4j_loader.upload_nodes(text_parser.work_nodes, dry_run)
     neo4j_loader.upload_nodes(text_parser.chapter_nodes, dry_run)
     neo4j_loader.upload_nodes(entities, dry_run)
-    neo4j_loader.upload_relationships(similarity_nodes, dry_run)
+    neo4j_loader.upload_relationships(similarity_nodes, 10000, dry_run)
     neo4j_loader.close()
     end = perf_counter()
 

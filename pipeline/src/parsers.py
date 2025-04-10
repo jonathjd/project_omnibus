@@ -15,8 +15,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from constants import DRB
 from logging_config import setup_logging
-from src.models import (ChapterNode, EntityNode, VerseNode, VerseSimilarity,
-                        WritingNode)
+from src.models import ChapterNode, EntityNode, VerseNode, VerseSimilarity, WritingNode
 
 logger = setup_logging()
 
@@ -79,7 +78,7 @@ class LatinVulgate:
                 cleaned_file.write(vs + "\n")
 
     def _parse_writings(self) -> List[WritingNode]:
-        """Generate WritingNode objects based on the WORKS dictionary."""
+        """Generate WritingNode objects based on the WORKS constant."""
         writing_nodes = []
         for book, author in self.WORKS.items():
             testament = (
